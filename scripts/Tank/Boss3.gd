@@ -2,9 +2,12 @@ extends Enemy
 
 const PHASE2_HP_RATIO: float = 0.5
 const ARTILLERY_SCENE: PackedScene = preload("res://scenes/Tank/ArtilleryTarget.tscn")
+const FIRE_PATCH_SCRIPT = preload("res://scripts/FirePatch.gd")
+const LATTICE_BULLET_SCRIPT = preload("res://scripts/Tank/InfernoLatticeBullet.gd")
 
 var _phase2: bool = false
 var _phase2_barrage_cd: float = 2.6
+var _phase1_artillery_cd: float = 5.0
 
 var _flame_burst_left: float = 0.0
 var _flame_tick_accum: float = 0.0
@@ -23,17 +26,35 @@ var _body_idle_modulate: Color = Color(1.0, 0.55, 0.28, 1.0)
 var _phase2_pulse_tween: Tween
 var _gun_home_local: Vector2 = Vector2.ZERO
 
+# Логика огненного следа
+var _fire_spawn_timer: float = 0.0
+const FIRE_SPAWN_INTERVAL: float = 0.18
+
+# ЛОГИКА РЕШЕТКИ (Phase 2)
+var _is_executing_lattice: bool = false
+var _lattice_cooldown: float = 0.0
+var _p2_lattice_started: bool = false
+
+# ЛОГИКА РЫВКА
+var _dash_cooldown: float = 0.0
+var _dash_timer: float = 0.0 # Время действия импульса
+const DASH_CD_MAX: float = 7.0
+const DASH_DURATION_P1: float = 0.4
+const DASH_DURATION_P2: float = 0.22
+const DASH_VELOCITY: float = 600.0
 
 func _ready():
 	_type_enemy = TypeEnemy.BOSS
 	super._ready()
 
-	_patrol_speed = int(_patrol_speed * 1.35 + 25)
-	_chase_speed = int(_chase_speed * 1.45 + 35)
+	_patrol_speed = int(_patrol_speed * 1.1 + 15)
+	_chase_speed = int(_chase_speed * 1.1 + 20)
 	_notice_range = 1080.0
 	_attack_range = 430.0
-	_fire_rate = 0.95
-	_damage = int(round(_damage * 1.18))
+	_flame_range = 450.0
+
+	_fire_rate = 1.4
+	_damage = int(round(_damage * 1.05))
 
 	if _body:
 		_body.texture = load("res://assets/future_tanks/PNG/Hulls_Color_D/Hull_06.png")
@@ -43,6 +64,11 @@ func _ready():
 		_gun.self_modulate = Color(1.0, 0.45, 0.2, 1.0)
 		_gun_home_local = _gun.position
 
+	# УМЕНЬШЕНИЕ КОЛЛИЗИИ: Делаем босса более "проходимым"
+	var col = get_node_or_null("CollisionShape2D")
+	if col and col.shape is CircleShape2D:
+		col.shape.radius *= 0.75 # Уменьшаем физический размер на 25%
+
 	_setup_flame_particles()
 	_setup_flame_beams()
 	_setup_flame_muzzle_animation()
@@ -51,19 +77,17 @@ func _ready():
 
 
 func _burst_duration() -> float:
-	return 1.2 if not _phase2 else 1.55
+	return 1.1 if not _phase2 else 1.35
 
 
 func _flame_tick_period() -> float:
-	# Подгоняем под 1с инвул игрока: редкие тяжелые пульсы вместо частых слабых тиков
-	return 1.02 if not _phase2 else 0.9
+	return 1.02 if not _phase2 else 0.95
 
 
 func _flame_damage_tick() -> int:
-	# Большой урон за попадание: один пульс должен быть опасным даже через броню
-	var mult: float = 1.65 if not _phase2 else 2.35
+	var mult: float = 0.65 if not _phase2 else 0.9
 	var base = int(round(_damage * mult))
-	return maxi(34 if not _phase2 else 52, base)
+	return maxi(18 if not _phase2 else 26, base)
 
 
 func _setup_flame_particles():
@@ -212,7 +236,7 @@ func _setup_hp_bar():
 	canvas.add_child(_hp_bar)
 
 	_hp_bar_label = Label.new()
-	_hp_bar_label.text = "\u0418\u041d\u0424\u0415\u0420\u041d\u041e"
+	_hp_bar_label.text = "ИНФЕРНО"
 	_hp_bar_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_hp_bar_label.add_theme_color_override("font_color", Color(1.0, 0.55, 0.2, 0.85))
 	_hp_bar_label.custom_minimum_size = Vector2(520, 20)
@@ -245,14 +269,11 @@ func take_damage(damage: int):
 
 
 func _play_body_hit_flash():
-	if _body == null:
-		return
-	if _hit_flash_tween != null and _hit_flash_tween.is_running():
-		_hit_flash_tween.kill()
-	var base_col := _body_idle_modulate
-	_hit_flash_tween = create_tween()
-	_hit_flash_tween.tween_property(_body, "self_modulate", Color(4.2, 3.8, 2.5, 1.0), 0.05)
-	_hit_flash_tween.tween_property(_body, "self_modulate", base_col, 0.08)
+	if _body:
+		if _hit_flash_tween and _hit_flash_tween.is_running(): _hit_flash_tween.kill()
+		_hit_flash_tween = create_tween()
+		_hit_flash_tween.tween_property(_body, "self_modulate", Color(4.2, 3.8, 2.5, 1.0), 0.05)
+		_hit_flash_tween.tween_property(_body, "self_modulate", _body_idle_modulate, 0.08)
 
 
 func _enter_phase2():
@@ -260,9 +281,10 @@ func _enter_phase2():
 		return
 	_phase2 = true
 	_is_invulnerable = true
+	_p2_lattice_started = false
 
 	if _hp_bar_label:
-		_hp_bar_label.text = "\u0418\u041d\u0424\u0415\u0420\u041d\u041e \u2014 \u0424\u0410\u0417\u0410 2"
+		_hp_bar_label.text = "ИНФЕРНО — В ЯРОСТИ"
 		_hp_bar_label.add_theme_color_override("font_color", Color(1.0, 0.72, 0.18, 0.95))
 	_set_bar_fill_color(Color(1.0, 0.38, 0.06, 0.78))
 
@@ -271,8 +293,7 @@ func _enter_phase2():
 		tw.tween_property(_body, "self_modulate", Color(1.5, 0.32, 0.08, 1.0), 0.45)
 
 	await get_tree().create_timer(0.85).timeout
-	if not is_instance_valid(self) or is_queued_for_deletion():
-		return
+	if not is_instance_valid(self) or is_queued_for_deletion(): return
 
 	_apply_phase2_stats()
 	_is_invulnerable = false
@@ -280,64 +301,109 @@ func _enter_phase2():
 
 
 func _apply_phase2_stats():
-	_fire_rate *= 0.58
-	_flame_range = 460.0
+	_fire_rate *= 0.8
+	_flame_range = 500.0
 	_flame_spread_deg = 27.0
 	_flame_ray_count = 7
-	_damage = int(round(_damage * 1.62))
-	_patrol_speed = int(_patrol_speed * 1.2)
-	_chase_speed = int(_chase_speed * 1.2)
-	_attack_range = 560.0
+	_damage = int(round(_damage * 1.08))
 	_body_idle_modulate = Color(1.0, 0.35, 0.12, 1.0)
-	if _body:
-		_body.self_modulate = _body_idle_modulate
+	if _body: _body.self_modulate = _body_idle_modulate
 
 
 func _start_phase2_pulse():
-	if _body == null:
-		return
-	if _phase2_pulse_tween != null and _phase2_pulse_tween.is_running():
-		_phase2_pulse_tween.kill()
+	if _body == null: return
+	if _phase2_pulse_tween and _phase2_pulse_tween.is_running(): _phase2_pulse_tween.kill()
 	_phase2_pulse_tween = create_tween().set_loops()
 	_phase2_pulse_tween.tween_property(_body, "self_modulate", Color(1.55, 0.22, 0.06, 1.0), 0.26)
 	_phase2_pulse_tween.tween_property(_body, "self_modulate", _body_idle_modulate, 0.26)
 
 
 func _move_enemy(delta: float):
+	if _dash_timer > 0:
+		var dash_dir = Vector2.ZERO
+		if _nav2d and not _nav2d.is_navigation_finished():
+			dash_dir = (_nav2d.get_next_path_position() - global_position).normalized()
+		else:
+			var target = _get_current_target()
+			if is_instance_valid(target):
+				dash_dir = global_position.direction_to(target.global_position)
+
+		velocity = dash_dir * DASH_VELOCITY
+		move_and_slide()
+
+		# Анти-застревание: Если во время рывка скорость упала почти до нуля
+		if _dash_timer < 0.3 and get_real_velocity().length() < 150.0:
+			_dash_timer = 0
+
+		if velocity.length() > 15.0:
+			rotation = lerp_angle(rotation, velocity.angle() + PI / 2, delta * 12.0)
+		return
+
+	if _is_executing_lattice:
+		velocity = velocity.move_toward(Vector2.ZERO, delta * 400.0)
+		return
+
 	_speed_limit_mult = 1.0
 	var current_speed = _chase_speed if (_current_state == State.CHASE or _type_enemy == TypeEnemy.SCOUT) else _patrol_speed
 	if _nav2d == null or _type_enemy == TypeEnemy.STATIONARY or _type_enemy == TypeEnemy.ARTILLERY or current_speed <= 0:
-		velocity = velocity.move_toward(Vector2.ZERO, delta * 600.0)
-		return
+		velocity = velocity.move_toward(Vector2.ZERO, delta * 600.0); return
 	var target = _get_current_target()
 	var nav_dir = Vector2.ZERO
 	if not _nav2d.is_navigation_finished():
 		nav_dir = (_nav2d.get_next_path_position() - global_position).normalized()
 	if nav_dir.length_squared() < 0.0001 and is_instance_valid(target) and target is Node2D:
 		var to_tgt = (target as Node2D).global_position - global_position
-		if to_tgt.length_squared() > 25.0:
-			nav_dir = to_tgt.normalized()
+		if to_tgt.length_squared() > 25.0: nav_dir = to_tgt.normalized()
 	if (Engine.get_physics_frames() + _logic_frame_offset) % 2 == 0:
 		_cached_avoidance = _compute_ally_avoidance(nav_dir)
 	_smoothed_avoidance = _smoothed_avoidance.lerp(_cached_avoidance, delta * 12.0)
 	var in_attack_range = false
 	if is_instance_valid(target):
 		var dist = global_position.distance_to(target.global_position)
-		if dist <= _attack_range and _target_in_sight and _roll_out_timer <= 0:
-			in_attack_range = true
+		if dist <= _attack_range and _target_in_sight and _roll_out_timer <= 0: in_attack_range = true
 	var final_dir = _smoothed_avoidance * 0.3 if in_attack_range else (nav_dir + _smoothed_avoidance * (1.2 if _type_enemy == TypeEnemy.BOSS else 0.7)).normalized()
 	velocity = velocity.lerp(final_dir * current_speed * _speed_limit_mult, delta * 9.0)
-	if velocity.length() > 15.0:
-		rotation = lerp_angle(rotation, velocity.angle() + PI / 2, delta * 6.0)
+	if velocity.length() > 15.0: rotation = lerp_angle(rotation, velocity.angle() + PI / 2, delta * 6.0)
 
 
 func _physics_process(delta: float):
 	super._physics_process(delta)
+
+	if _dash_cooldown > 0: _dash_cooldown -= delta
+	if _dash_timer > 0:
+		_dash_timer -= delta
+		_spawn_tracks_fire()
+
+	if _lattice_cooldown > 0: _lattice_cooldown -= delta
+
+	# Рывок доступен в обеих фазах (если не занят Сеткой)
+	if _dash_cooldown <= 0 and is_instance_valid(_player) and not _is_executing_lattice:
+		if global_position.distance_to(_player.global_position) > 550.0:
+			_perform_dash()
+
 	if _phase2:
+		# Фаза 2: Сетка
+		if not _p2_lattice_started:
+			_p2_lattice_started = true
+			_start_lattice_attack()
+		elif _lattice_cooldown <= 0 and not _is_executing_lattice and is_instance_valid(_player):
+			_start_lattice_attack()
+
 		_phase2_barrage_cd -= delta
 		if _phase2_barrage_cd <= 0.0:
-			_phase2_barrage_cd = 3.3
+			_phase2_barrage_cd = 4.5
 			_try_phase2_barrage()
+
+		if velocity.length() > 30.0 and _dash_timer <= 0:
+			_fire_spawn_timer -= delta
+			if _fire_spawn_timer <= 0:
+				_fire_spawn_timer = FIRE_SPAWN_INTERVAL
+				_spawn_tracks_fire()
+	else:
+		_phase1_artillery_cd -= delta
+		if _phase1_artillery_cd <= 0:
+			_phase1_artillery_cd = 7.0
+			_try_phase1_artillery()
 
 	var period := _flame_tick_period()
 	if _flame_burst_left > 0.0:
@@ -346,97 +412,119 @@ func _physics_process(delta: float):
 		while _flame_tick_accum >= period:
 			_flame_tick_accum -= period
 			_do_flame_damage_tick()
-		if _gun:
-			_gun.position = _gun_home_local + Vector2(randf_range(-3.0, 3.0), randf_range(-5.0, 2.0))
+		if _gun: _gun.position = _gun_home_local + Vector2(randf_range(-3.0, 3.0), randf_range(-5.0, 2.0))
 		_update_flame_beam_lines()
 	if _flame_burst_left <= 0.0:
-		if _gun:
-			_gun.position = _gun_home_local
+		if _gun: _gun.position = _gun_home_local
 		_flame_fx_idle()
+
+func _perform_dash():
+	_dash_cooldown = DASH_CD_MAX
+	var duration = DASH_DURATION_P2 if _phase2 else DASH_DURATION_P1
+	_dash_timer = duration
+
+	if is_instance_valid(_player):
+		if _body:
+			var tw = create_tween()
+			tw.tween_property(_body, "self_modulate", Color(5, 2, 1, 1), 0.1)
+			tw.tween_property(_body, "self_modulate", _body_idle_modulate, duration)
+
+func _start_lattice_attack():
+	_is_executing_lattice = true
+	_lattice_cooldown = 14.0
+
+	if _gun:
+		var tw = create_tween()
+		tw.tween_property(_gun, "rotation_degrees", _gun.rotation_degrees + 1080, 1.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_IN_OUT)
+		await tw.finished
+
+	_spawn_lattice()
+	_is_executing_lattice = false
+
+func _spawn_lattice():
+	if not is_instance_valid(_player) or is_queued_for_deletion(): return
+
+	var p_pos = _player.global_position
+
+	# АДАПТИВНОСТЬ: Рассчитываем дистанцию спавна на основе вьюпорта
+	var view_size = get_viewport_rect().size
+	var zoom = 1.0
+	if get_viewport().get_camera_2d():
+		zoom = get_viewport().get_camera_2d().zoom.x
+
+	var spawn_dist = (max(view_size.x, view_size.y) / zoom) * 0.75
+	var spacing = 240.0
+	var count = 12
+
+	# СВЕРХУ (Вниз)
+	for i in range(count):
+		var x = p_pos.x + (i - count/2.0) * spacing
+		_create_lattice_bullet(Vector2(x, p_pos.y - spawn_dist), Vector2.DOWN)
+
+	# СПРАВА (Влево)
+	for i in range(count):
+		var y = p_pos.y + (i - count/2.0) * spacing
+		_create_lattice_bullet(Vector2(p_pos.x + spawn_dist, y), Vector2.LEFT)
+
+func _create_lattice_bullet(pos: Vector2, dir: Vector2):
+	var b = Area2D.new()
+	b.set_script(LATTICE_BULLET_SCRIPT)
+	get_parent().add_child(b)
+	b.init(pos, dir, 25)
+
+func _spawn_tracks_fire():
+	var track_offsets = [Vector2(-35, 0), Vector2(35, 0)]
+	for offset in track_offsets:
+		var patch = Node2D.new(); patch.set_script(FIRE_PATCH_SCRIPT); patch.global_position = global_position + offset.rotated(rotation)
+		get_parent().add_child(patch)
 
 
 func _fire_at_pos(_pos: Vector2):
-	if _shoot_timer.time_left > 0.0 or _flame_burst_left > 0.0:
-		return
-	if AudioManager:
-		AudioManager.play_flamethrower_sound(global_position)
-
-	_flame_burst_left = _burst_duration()
-	_flame_tick_accum = _flame_tick_period()
-	_flame_fx_attacking()
-
+	if _shoot_timer.time_left > 0.0 or _flame_burst_left > 0.0 or _is_executing_lattice: return
+	if AudioManager: AudioManager.play_flamethrower_sound(global_position)
+	_flame_burst_left = _burst_duration(); _flame_tick_accum = _flame_tick_period(); _flame_fx_attacking()
 	_shoot_timer.start(_burst_duration() + _fire_rate)
 
 
 func _do_flame_damage_tick():
-	if _bullet_position == null:
-		return
-	var tgt = _get_current_target()
-	if not is_instance_valid(tgt) or not (tgt is Node2D):
-		return
-
-	var origin := _bullet_position.global_position
-	var target_pt: Vector2 = (tgt as Node2D).global_position
-	var base_ang: float = (target_pt - origin).angle()
-	var dmg := _flame_damage_tick()
-	var space := get_world_2d().direct_space_state
-	var exclude: Array[RID] = [get_rid()]
-	var count := _flame_ray_count
-	var spread := deg_to_rad(_flame_spread_deg)
-	var damaged_ids: Dictionary = {}
-
+	if _bullet_position == null: return
+	var tgt = _get_current_target(); if not is_instance_valid(tgt) or not (tgt is Node2D): return
+	var origin := _bullet_position.global_position; var target_pt: Vector2 = (tgt as Node2D).global_position
+	var base_ang: float = (target_pt - origin).angle(); var dmg := _flame_damage_tick(); var space := get_world_2d().direct_space_state
+	var exclude: Array[RID] = [get_rid()]; var count := _flame_ray_count; var spread := deg_to_rad(_flame_spread_deg); var damaged_ids: Dictionary = {}
 	for i in range(count):
-		var off := 0.0
-		if count > 1:
-			off = lerpf(-spread * 0.5, spread * 0.5, float(i) / float(count - 1))
-		var ang := base_ang + off
-		var dir := Vector2.from_angle(ang)
-		var to := origin + dir * _flame_range
-		var q := PhysicsRayQueryParameters2D.create(origin, to)
-		q.exclude = exclude
-		q.collision_mask = 3
-		q.collide_with_areas = true
-		q.collide_with_bodies = true
-		var hit: Dictionary = space.intersect_ray(q)
-		if hit.is_empty():
-			continue
-		var col: Variant = hit.get("collider")
-		if col == null or not (col is Node):
-			continue
-		var nid = (col as Node).get_instance_id()
-		if damaged_ids.has(nid):
-			continue
+		var off := 0.0; if count > 1: off = lerpf(-spread * 0.5, spread * 0.5, float(i) / float(count - 1))
+		var ang := base_ang + off; var dir := Vector2.from_angle(ang); var to := origin + dir * _flame_range
+		var q := PhysicsRayQueryParameters2D.create(origin, to); q.exclude = exclude; q.collision_mask = 3; q.collide_with_areas = true; q.collide_with_bodies = true
+		var hit: Dictionary = space.intersect_ray(q); if hit.is_empty(): continue
+		var col: Variant = hit.get("collider"); if col == null or not (col is Node): continue
+		var nid = (col as Node).get_instance_id(); if damaged_ids.has(nid): continue
 		damaged_ids[nid] = true
-		if col is Player:
-			(col as Player).take_damage(dmg)
-		elif col is Base:
-			(col as Base).take_damage(dmg)
+		if col is Player: (col as Player).take_damage(dmg, true); (col as Player).apply_burn(1.5)
+		elif col is Base: (col as Base).take_damage(dmg)
+
+func _try_phase1_artillery():
+	if ARTILLERY_SCENE == null: return
+	var tgt = _get_current_target(); if not is_instance_valid(tgt) or not (tgt is Node2D): return
+	_spawn_phase_shell(tgt.global_position, 30, 140.0, 1.8, false)
 
 func _try_phase2_barrage():
-	if not _phase2 or ARTILLERY_SCENE == null:
-		return
+	if not _phase2 or ARTILLERY_SCENE == null: return
 	var tgt = _get_current_target()
-	if not is_instance_valid(tgt) or not (tgt is Node2D):
-		return
+	if not is_instance_valid(tgt) or not (tgt is Node2D): return
 	var center: Vector2 = (tgt as Node2D).global_position
-	# Фаза 2: шесть крупных ударов вокруг цели + один в центр
 	for i in range(6):
-		var ang = TAU * float(i) / 6.0
-		var pos = center + Vector2.from_angle(ang) * 140.0
-		_spawn_phase2_shell(pos, int(round(_damage * 0.9)), 120.0, 1.0 + float(i) * 0.07)
-	_spawn_phase2_shell(center, int(round(_damage * 1.25)), 155.0, 1.25)
+		var ang = TAU * float(i) / 6.0; var pos = center + Vector2.from_angle(ang) * 140.0
+		_spawn_phase_shell(pos, 40, 120.0, 1.5, true)
+	_spawn_phase_shell(center, 40, 155.0, 1.75, true)
 
-func _spawn_phase2_shell(pos: Vector2, dmg: int, radius: float, duration: float):
+func _spawn_phase_shell(pos: Vector2, dmg: int, radius: float, duration: float, is_p2: bool):
 	var shell = ARTILLERY_SCENE.instantiate()
 	shell.global_position = pos + Vector2(randf_range(-30.0, 30.0), randf_range(-30.0, 30.0))
-	shell.set("_damage", dmg)
-	shell.set("_radius", radius)
-	shell.set("_duration", duration)
+	shell.set("_damage", dmg); shell.set("_radius", radius); shell.set("_duration", duration)
+	if "_is_inferno_phase2" in shell: shell.set("_is_inferno_phase2", is_p2)
 	get_parent().add_child(shell)
 
-
 func _destroy():
-	if _phase2_pulse_tween != null and _phase2_pulse_tween.is_running():
-		_phase2_pulse_tween.kill()
-	_flame_fx_idle()
-	super._destroy()
+	if _phase2_pulse_tween and _phase2_pulse_tween.is_running(): _phase2_pulse_tween.kill()
+	_flame_fx_idle(); super._destroy()
