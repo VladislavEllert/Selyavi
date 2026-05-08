@@ -119,7 +119,14 @@ func _process(_delta):
 
 			if _is_boss_level:
 				var lvl = SaveManager.current_level if SaveManager else 5
-				var boss_name = "ПРИЗЫВАТЕЛЬ" if lvl == 5 else "РИКОШЕТИР"
+				var boss_name = "ПРИЗЫВАТЕЛЬ"
+				if lvl == 10:
+					boss_name = "РИКОШЕТИР"
+				elif lvl == 15:
+					boss_name = "ИНФЕРНО"
+				elif lvl >= 20:
+					boss_name = "АРТУ"
+
 				status_label.text = boss_name + " ЖДЕТ ТЕБЯ..."
 				status_label.add_theme_color_override("font_color", Color(1, 0.3, 0.3))
 				_show_start_button()

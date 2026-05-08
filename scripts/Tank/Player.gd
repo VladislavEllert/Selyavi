@@ -25,6 +25,13 @@ var _invul_tween: Tween
 var _controls_inverted: bool = false
 var _inverse_timer: float = 0.0
 
+# Переменные для эффекта горения
+var _burn_timer: float = 0.0
+var _burn_tick_accum: float = 0.0
+var _burn_particles: CPUParticles2D
+const BURN_TICK_INTERVAL: float = 1.0
+const BURN_DAMAGE: int = 10
+
 const PLASMA: int = 0
 const MEDIUM: int = 1
 const LIGHT: int = 2
@@ -44,6 +51,7 @@ func _ready():
 	_ricochet_bullet_scene = load("res://scenes/Tank/RicochetBullet.tscn")
 	_start_position = global_position
 	_load_all_data()
+	_setup_burn_particles()
 
 	call_deferred("_connect_hud_controls")
 	_start_invulnerability(3.0)
@@ -62,12 +70,43 @@ func _ready():
 			SaveManager.settings_changed.connect(_apply_camera_fov)
 	call_deferred("_apply_camera_fov")
 
+func _setup_burn_particles():
+	_burn_particles = CPUParticles2D.new()
+	_burn_particles.emitting = false
+	_burn_particles.amount = 60
+	_burn_particles.lifetime = 0.5
+	_burn_particles.texture = load("res://assets/future_tanks/PNG/Effects/Smoke_A.png")
+	_burn_particles.emission_shape = CPUParticles2D.EMISSION_SHAPE_SPHERE
+	_burn_particles.emission_sphere_radius = 18.0
+	_burn_particles.gravity = Vector2(0, -180)
+	_burn_particles.initial_velocity_min = 40.0
+	_burn_particles.initial_velocity_max = 80.0
+	_burn_particles.scale_amount_min = 0.1
+	_burn_particles.scale_amount_max = 0.3
+	_burn_particles.z_index = 5 # Поверх танка
+
+	var gradient = Gradient.new()
+	gradient.set_color(0, Color(1, 0.95, 0.4, 1)) # Яркое ядро
+	gradient.add_point(0.2, Color(1, 0.6, 0, 1)) # Оранжевый
+	gradient.add_point(0.6, Color(0.9, 0.2, 0, 0.8)) # Красный
+	gradient.add_point(1.0, Color(0.8, 0.4, 0.1, 0)) # Прозрачное затухание (без дыма)
+	_burn_particles.color_ramp = gradient
+
+	add_child(_burn_particles)
+
 func set_controls_inverted(inverted: bool, duration: float = 0.0):
 	_controls_inverted = inverted
 	if inverted and duration > 0:
 		_inverse_timer = duration
 	elif !inverted and _inverse_timer <= 0:
 		_controls_inverted = false
+
+func apply_burn(duration: float):
+	_burn_timer = duration
+	if _burn_particles:
+		_burn_particles.emitting = true
+	if _burn_tick_accum <= 0:
+		_burn_tick_accum = 0.0
 
 func _connect_hud_controls():
 	var hud = get_tree().get_first_node_in_group("hud")
@@ -110,19 +149,17 @@ func use_move_vector(move_vector: Vector2):
 		rotation = final_vector.angle() + PI/2
 	_handle_movement_sound(velocity)
 
-# Функция для безопасного спавна пули (чтобы не пролетала сквозь стены вплотную)
 func _get_safe_bullet_spawn_pos() -> Vector2:
-	var start_pos = global_position # Центр танка
-	var end_pos = _bullet_position.global_position # Кончик дула
+	var start_pos = global_position
+	var end_pos = _bullet_position.global_position
 
 	var space_state = get_world_2d().direct_space_state
 	var query = PhysicsRayQueryParameters2D.create(start_pos, end_pos)
 	query.exclude = [self]
-	query.collision_mask = 1 # Только стены
+	query.collision_mask = 1
 
 	var result = space_state.intersect_ray(query)
 	if result:
-		# Если дуло залезло в стену, спавним пулю прямо перед поверхностью стены
 		return result.position - (end_pos - start_pos).normalized() * 5.0
 
 	return end_pos
@@ -223,6 +260,23 @@ func _physics_process(delta):
 		if _inverse_timer <= 0:
 			_controls_inverted = false
 
+	# Обработка горения
+	if _burn_timer > 0:
+		_burn_timer -= delta
+		_burn_tick_accum += delta
+
+		# Визуальный эффект горения
+		modulate = Color(1.5, 0.6, 0.2).lerp(Color.WHITE, 1.0 - clamp(_burn_timer / 1.5, 0.0, 1.0))
+
+		if _burn_tick_accum >= BURN_TICK_INTERVAL:
+			_burn_tick_accum = 0.0
+			# Решение: используем флаг ignore_invul, чтобы огонь всегда наносил урон
+			take_damage(BURN_DAMAGE, true)
+
+		if _burn_timer <= 0:
+			modulate = Color.WHITE
+			if _burn_particles: _burn_particles.emitting = false
+
 	if _joystick == null or not _joystick.get_is_joystick_active():
 		var input_dir = Input.get_vector("move_left", "move_right", "move_up", "move_down")
 		if _controls_inverted: input_dir = -input_dir
@@ -264,17 +318,23 @@ func _on_ammo_selected(slot_idx: int):
 func get_ammo_loadout() -> Array[int]:
 	return _ammo_loadout.duplicate()
 
-func take_damage(damage: int):
-	if _is_invulnerable: return
+# Исправленный take_damage с поддержкой игнорирования инвула
+func take_damage(damage: int, ignore_invul: bool = false):
+	if _is_invulnerable and not ignore_invul: return
+
 	super.take_damage(damage)
 	health_changed.emit(_hp, _max_hp)
-	# Даем инвул только если урон существенный (> 10)
-	if _hp > 0 and damage > 10:
+
+	# Даем инвул только если урон существенный и это НЕ горение
+	if _hp > 0 and damage > 10 and not ignore_invul:
 		_start_invulnerability(1.0)
 
 func _destroy():
 	_lives -= 1
 	lives_changed.emit(_lives)
+	_burn_timer = 0
+	modulate = Color.WHITE
+	if _burn_particles: _burn_particles.emitting = false
 	if _lives > 0: _revive()
 	else:
 		if SaveManager: SaveManager.save_game()
@@ -350,7 +410,7 @@ func _draw():
 			_draw_ricochet_scope_preview(direction.normalized())
 			return
 
-		var range_len = 650.0 # PLASMA default
+		var range_len = 650.0
 		match _type_bullet:
 			PLASMA: range_len = 650.0
 			MEDIUM: range_len = 300.0
@@ -374,7 +434,6 @@ func _is_wall_ricochet_preview(c: Object) -> bool:
 	return cls == "TileMap" or cls == "TileMapLayer"
 
 
-## Предпросмотр пути рикошета (как у RicochetBullet): до 2 отскоков, дальность как MAX_RANGE снаряда.
 func _draw_ricochet_scope_preview(dir: Vector2):
 	const PREVIEW_MAX_RANGE := 2200.0
 	const PLAYER_RICOCHET_BOUNCES := 2
