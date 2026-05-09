@@ -76,8 +76,8 @@ position = Vector2(500, 500)
 [node name="Camera2D" type="Camera2D" parent="PlayerTank"]
 limit_left = 0
 limit_top = 0
-limit_right = 3000
-limit_bottom = 1500
+limit_right = 4851
+limit_bottom = 2300
 position_smoothing_enabled = true
 
 [node name="MusicPlayer" type="AudioStreamPlayer" parent="."]
