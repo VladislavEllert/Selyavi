@@ -6,7 +6,7 @@ static var _smoke_texture = preload("res://assets/future_tanks/PNG/Effects/Smoke
 static var _explosion_sound = preload("res://assets/sounds/vystrel-tanka.mp3")
 
 # --- Константы ---
-const BULLET_SPEED: float = 8.0
+const BULLET_SPEED: float = 8.0 # Базовая скорость (пикселей за тик при 60 FPS)
 const MAX_RANGE: float = 2200.0
 const SPLASH_RADIUS: float = 125.0
 const DEFAULT_BOUNCES: int = 3
@@ -85,15 +85,17 @@ func _setup_explosive_visuals():
 		_trail_particles.amount = 40; _trail_particles.lifetime = 0.5; _trail_particles.local_coords = false; _trail_particles.texture = _smoke_texture; _trail_particles.emission_shape = CPUParticles2D.EMISSION_SHAPE_SPHERE; _trail_particles.emission_sphere_radius = 8.0; _trail_particles.gravity = Vector2.ZERO; _trail_particles.initial_velocity_min = 50.0; _trail_particles.initial_velocity_max = 100.0; _trail_particles.scale_amount_min = 0.1; _trail_particles.scale_amount_max = 0.3
 		var grad = Gradient.new(); grad.set_color(0, Color(1.0, 0.2, 0.1, 1.0)); grad.add_point(1.0, Color(0.1, 0.1, 0.1, 0.0)); _trail_particles.color_ramp = grad
 
-func _process(_delta):
+# ПЕРЕШЛИ НА ФИЗИЧЕСКИЙ ЦИКЛ
+func _physics_process(delta):
 	if _destroyed: return
-	_move()
+	_move(delta)
 
-func _move():
+func _move(delta):
+	var move_amount = BULLET_SPEED * delta * 60.0 # Нормализация
 	var dir: Vector2 = _velocity.normalized()
-	var step: Vector2 = dir * BULLET_SPEED
+	var step: Vector2 = dir * move_amount
 	var space_state = get_world_2d().direct_space_state
-	var ray = PhysicsRayQueryParameters2D.create(global_position, global_position + dir * 25.0)
+	var ray = PhysicsRayQueryParameters2D.create(global_position, global_position + dir * (move_amount + 15.0))
 	ray.exclude = [get_rid(), _ignored_body_rid]
 	var hit = space_state.intersect_ray(ray)
 
@@ -120,7 +122,7 @@ func _move():
 		return
 
 	global_position += step
-	_traveled_distance += BULLET_SPEED
+	_traveled_distance += move_amount
 	if _traveled_distance >= MAX_RANGE:
 		_destroy_silent()
 

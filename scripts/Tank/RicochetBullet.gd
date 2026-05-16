@@ -1,7 +1,7 @@
 extends Area2D
 
 # --- Константы ---
-const BULLET_SPEED: float = 9.0
+const BULLET_SPEED: float = 9.0 # Базовая скорость (пикселей за тик при 60 FPS)
 const MAX_RANGE: float = 1200.0
 const SPLASH_RADIUS: float = 100.0
 const DEFAULT_BOUNCES: int = 2
@@ -37,15 +37,18 @@ func _ready():
 	_velocity = Vector2(0.0, -1.0).rotated(rotation)
 	body_entered.connect(_on_body_entered)
 
-func _process(_delta):
+# ПЕРЕШЛИ НА ФИЗИЧЕСКИЙ ЦИКЛ
+func _physics_process(delta):
 	if _destroyed: return
-	_move()
+	_move(delta)
 
-func _move():
+func _move(delta):
+	var move_amount = BULLET_SPEED * delta * 60.0 # Нормализация под время
 	var dir: Vector2 = _velocity.normalized()
-	var step: Vector2 = dir * BULLET_SPEED
+	var step: Vector2 = dir * move_amount
 	var space_state = get_world_2d().direct_space_state
-	var ray = PhysicsRayQueryParameters2D.create(global_position, global_position + dir * (BULLET_SPEED + 14.0))
+	# Проверка коллизии на шаг вперед + запас
+	var ray = PhysicsRayQueryParameters2D.create(global_position, global_position + dir * (move_amount + 14.0))
 	ray.exclude = [get_rid()]
 	if _ignored_body_rid.is_valid(): ray.exclude.append(_ignored_body_rid)
 
@@ -71,7 +74,7 @@ func _move():
 			return
 
 	global_position += step
-	_traveled_distance += BULLET_SPEED
+	_traveled_distance += move_amount
 	if _traveled_distance >= MAX_RANGE: _destroy_silent()
 
 func _handle_impact(impact_pos: Vector2):

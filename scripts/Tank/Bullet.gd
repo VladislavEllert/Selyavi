@@ -10,7 +10,7 @@ const TEX_BOPS = preload("res://assets/future_tanks/PNG/Effects/Heavy_Shell.png"
 # Кэш скрипта эффекта (статическая переменная на уровне класса)
 static var _effect_script = preload("res://scripts/ExplosionEffect.gd")
 
-var _bullet_speed: int = 7
+var _bullet_speed: float = 400.0 # Теперь это пиксели в секунду
 var _velocity: Vector2 = Vector2.ZERO
 var _bullet_sound: AudioStreamPlayer
 var _visibility_bullet: VisibleOnScreenNotifier2D
@@ -49,10 +49,12 @@ func is_player() -> bool:
 func get_damage() -> int:
 	return _damage
 
-func _process(delta):
-	# ОПТИМИЗАЦИЯ: убрали length(), используем скалярную скорость
-	position += _velocity * _bullet_speed
-	_traveled_distance += _bullet_speed
+# ИСПОЛЬЗУЕМ ФИЗИЧЕСКИЙ ЦИКЛ ДЛЯ СТАБИЛЬНОСТИ
+func _physics_process(delta):
+	# Движение теперь не зависит от FPS (умножаем на delta)
+	var move_amount = _bullet_speed * delta * 60.0 # 60.0 для сохранения баланса скоростей
+	position += _velocity * move_amount
+	_traveled_distance += move_amount
 
 	if _traveled_distance >= _max_range:
 		_destroy()
@@ -138,24 +140,25 @@ func init(type_bullet: int, is_player: bool, damage: int = 0, ignored_rid: RID =
 	if custom_range > 0: _max_range = custom_range
 
 func _update_visuals_and_speed():
+	# ЦИФРЫ СКОРОСТИ СОХРАНЕНЫ ДЛЯ БАЛАНСА, НО ТЕПЕРЬ ОНИ СТАБИЛЬНЫ
 	match _type_bullet:
 		PLASMA:
 			_bullet_sprite.texture = TEX_PLASMA
-			_bullet_speed = 9; _max_range = 650.0
+			_bullet_speed = 9.0; _max_range = 650.0
 		MEDIUM:
 			_bullet_sprite.texture = TEX_MEDIUM
-			_bullet_speed = 4; _max_range = 300.0
+			_bullet_speed = 4.0; _max_range = 300.0
 		LIGHT:
 			_bullet_sprite.texture = TEX_LIGHT
-			_bullet_speed = 7; _max_range = 1000.0
+			_bullet_speed = 7.0; _max_range = 1000.0
 		HE:
 			_bullet_sprite.texture = TEX_HE
-			_bullet_speed = 5; _max_range = 550.0
+			_bullet_speed = 5.0; _max_range = 550.0
 			_aoe_radius = 105.0
 			_aoe_damage_multiplier = 0.65
 		BOPS:
 			_bullet_sprite.texture = TEX_BOPS
-			_bullet_speed = 8; _max_range = 1100.0
+			_bullet_speed = 8.0; _max_range = 1100.0
 			_pierce_left = 1
 
 func _apply_aoe_damage(hit_body: Node):
