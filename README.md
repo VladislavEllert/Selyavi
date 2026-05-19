@@ -26,6 +26,7 @@
 - [Магазин](#-магазин)
 - [Управление](#-управление)
 - [Технологии](#-технологии)
+- [Сборка](#-сборка)
 - [Лицензия](#-лицензия)
 
 ---
@@ -110,6 +111,42 @@ Tanks_2026/
 ├── assets/          # Спрайты, музыка, тайлсеты
 ├── resources/       # .tres ресурсы данных (TrapData, BulletData...)
 └── Images/          # Скриншоты
+```
+
+---
+
+## 🔨 Сборка
+
+### Требования
+
+- [Godot Engine 4.4](https://godotengine.org/download) с установленным Aurora OS Godot Plugin
+- Экспортные шаблоны `AuroraOS-5.x.x`
+- Linux-машина с установленным `rpmbuild` и `patchelf`
+
+### 1. Экспорт из Godot
+
+```
+Project → Export → AuroraOS (noarch)
+```
+
+Результат экспорта разместить в папку `Tanks_2026_arm.rpm_buildroot/BUILD/`
+
+### 2. Сборка RPM
+
+Выполнить на Linux:
+
+```bash
+cd Tanks_2026_arm.rpm_buildroot
+bash buildscript.sh
+```
+
+Готовый `.rpm` появится в `Tanks_2026_arm.rpm_buildroot/RPMS/armv7hl/`
+
+### 3. Установка на устройство
+
+```bash
+# Через sftp скопировать RPM на устройство, затем:
+pkcon install-local harbour-tanks2026-1.0.0-1.armv7hl.rpm
 ```
 
 ---
